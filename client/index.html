@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Audio/Video Call</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>WebRTC Audio/Video Call</h1>
+        
+        <!-- Status Display Area -->
+        <div class="status-area">
+            <div class="status-indicator">
+                <span id="status-text">Idle</span>
+                <div id="status-light" class="status-light idle"></div>
+            </div>
+        </div>
+        
+        <!-- User ID Display -->
+        <div id="id-container" class="hidden">
+            <p>Your ID: <span id="user-id"></span></p>
+        </div>
+        
+        <!-- Call Initiation Area -->
+        <div id="call-controls" class="hidden">
+            <div class="input-group">
+                <label for="peer-id-input">Enter ID to call:</label>
+                <input type="text" id="peer-id-input" placeholder="Peer ID">
+            </div>
+            <div class="call-buttons">
+                <!-- Two separate buttons for audio/video calls -->
+                <button id="callAudioBtn" class="audio-btn">Call Audio Only</button>
+                <button id="callVideoBtn" class="video-btn">Start Video Call</button>
+            </div>
+            
+            <!-- Optional: User List -->
+            <div id="user-list-container" class="hidden">
+                <h3>Available Users</h3>
+                <ul id="user-list"></ul>
+            </div>
+        </div>
+        
+        <!-- Incoming Call Notification -->
+        <div id="incoming-call" class="notification hidden">
+            <p id="call-type-notification">Incoming call from: <span id="caller-id"></span></p>
+            <div class="call-actions">
+                <button id="accept-call" class="accept-btn">Accept</button>
+                <button id="reject-call" class="reject-btn">Reject</button>
+            </div>
+        </div>
+        
+        <!-- Active Call Area -->
+        <div id="active-call" class="hidden">
+            <h2>In call with: <span id="active-peer-id"></span></h2>
+            
+            <!-- Video Container for both local and remote videos -->
+            <div class="video-container">
+                <div class="video-wrapper local-video-wrapper">
+                    <video id="localVideo" autoplay muted playsinline></video>
+                    <div class="video-label">You</div>
+                </div>
+                <div class="video-wrapper remote-video-wrapper">
+                    <video id="remoteVideo" autoplay playsinline></video>
+                    <div class="video-label">Remote</div>
+                </div>
+            </div>
+            
+            <div class="call-controls">
+                <button id="mute-btn" class="control-btn">Mute</button>
+                <button id="video-toggle-btn" class="control-btn hidden">Toggle Video</button>
+                <button id="end-call-btn" class="end-btn">End Call</button>
+            </div>
+        </div>
+        
+        <!-- Error Message Display -->
+        <div id="error-message" class="error hidden"></div>
+    </div>
+    
+    <script src="script.js"></script>
+</body>
+</html>
