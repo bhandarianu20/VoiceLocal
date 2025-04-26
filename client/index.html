@@ -67,10 +67,38 @@
                 </div>
             </div>
             
+            <!-- Audio element for audio calls -->
+            <audio id="remote-audio" autoplay playsinline controls style="display: block; margin: 10px auto;"></audio>
+            
             <div class="call-controls">
                 <button id="mute-btn" class="control-btn">Mute</button>
                 <button id="video-toggle-btn" class="control-btn hidden">Toggle Video</button>
                 <button id="end-call-btn" class="end-btn">End Call</button>
+            </div>
+            
+            <!-- Chat Interface -->
+            <div id="chat-container" class="chat-container">
+                <div class="chat-header">
+                    <h3>Chat</h3>
+                </div>
+                <div id="chat-messages" class="chat-messages"></div>
+                <div class="chat-input-area">
+                    <input type="text" id="chat-input" placeholder="Type your message..." />
+                    <button id="send-message-btn">Send</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Direct Chat Interface -->
+        <div id="direct-chat" class="direct-chat hidden">
+            <div class="direct-chat-header">
+                <h3>Chat with <span id="direct-chat-peer-id"></span></h3>
+                <button id="close-direct-chat-btn" class="close-btn">×</button>
+            </div>
+            <div id="direct-chat-messages" class="chat-messages"></div>
+            <div class="chat-input-area">
+                <input type="text" id="direct-chat-input" placeholder="Type your message..." />
+                <button id="direct-send-message-btn">Send</button>
             </div>
         </div>
         
@@ -78,6 +106,6 @@
         <div id="error-message" class="error hidden"></div>
     </div>
     
-    <script src="script.js"></script>
+    <script src="script.js" type="module"></script>
 </body>
 </html>

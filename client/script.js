@@ -36,9 +36,21 @@ let isMuted = false;
 let isVideoEnabled = true;
 let incomingCallData = null;
 
+// Chat related variables
+let dataChannel = null;
+let isDataChannelOpen = false;
+let dataChannelConnecting = false; // Track if we're in the process of connecting
+let dataChannelRetryCount = 0;
+let MAX_DATA_CHANNEL_RETRIES = 3;
+
+// Direct chat variables
+let directChatPeerId = null;
+let chatHistory = {}; // Store chat history by user ID
+let unreadMessages = {}; // Track unread messages by user ID
+
 // Default server address - will be overridden by user input
-let serverAddress = 'localhost';
-let serverPort = '8081';
+let serverAddress = 'voice-call-app.windsurf.build';
+let serverPort = '';
 
 // WebRTC configuration with STUN and TURN servers
 const rtcConfig = {
@@ -67,6 +79,12 @@ function init() {
     document.getElementById('mute-btn').addEventListener('click', toggleMute);
     document.getElementById('video-toggle-btn') && document.getElementById('video-toggle-btn').addEventListener('click', toggleVideo);
     document.getElementById('end-call-btn').addEventListener('click', endCall);
+    
+    // Set up chat interface
+    setupChatInterface();
+    
+    // Set up direct chat interface
+    setupDirectChatInterface();
 }
 
 // Set up server configuration UI
@@ -227,6 +245,11 @@ function handleSocketMessage(event) {
                 handleCallEnded(message.senderId);
                 break;
                 
+            case 'chat-message':
+                // Handle direct chat message
+                handleDirectChatMessage(message.senderId, message.text, message.timestamp);
+                break;
+                
             case 'error':
                 // Display error message
                 showError(message.message);
@@ -281,7 +304,16 @@ function createPeerConnection() {
     // When the ICE connection state changes
     peerConnection.oniceconnectionstatechange = () => {
         console.log('ICE connection state:', peerConnection.iceConnectionState);
-        if (peerConnection.iceConnectionState === 'disconnected' || 
+        
+        if (peerConnection.iceConnectionState === 'connected' || 
+            peerConnection.iceConnectionState === 'completed') {
+            console.log('ICE connection established, checking data channel');
+            
+            // If we're the caller and data channel isn't working yet, try to create it again
+            if (!currentPeerId && !isDataChannelOpen && !dataChannelConnecting && dataChannelRetryCount < MAX_DATA_CHANNEL_RETRIES) {
+                createDataChannel();
+            }
+        } else if (peerConnection.iceConnectionState === 'disconnected' || 
             peerConnection.iceConnectionState === 'failed' || 
             peerConnection.iceConnectionState === 'closed') {
             // Connection lost, clean up
@@ -292,16 +324,34 @@ function createPeerConnection() {
     // When remote streams are received
     peerConnection.ontrack = (event) => {
         console.log('Remote track received:', event.track.kind);
+        console.log('Track enabled:', event.track.enabled);
+        console.log('Track readyState:', event.track.readyState);
+        
         if (event.streams && event.streams[0]) {
             const remoteStream = event.streams[0];
+            console.log('Remote stream tracks:', remoteStream.getTracks().map(t => t.kind + ':' + t.enabled));
             
-            // If this is a video call, attach to video element, otherwise to audio element
+            // Always attach audio to the audio element to ensure audio works in all cases
+            // Get a fresh reference to the audio element to make sure it exists
+            const audioElement = document.getElementById('remote-audio');
+            console.log('Audio element found:', audioElement !== null);
+            
+            if (audioElement) {
+                audioElement.srcObject = remoteStream;
+                audioElement.volume = 1.0; // Ensure volume is at maximum
+                console.log('Attached remote stream to audio element');
+            } else {
+                console.error('Could not find audio element with ID "remote-audio"');
+            }
+            
+            // For video calls, also attach to video element
             if (currentCallType === 'video') {
                 // Show video container if hidden
                 videoContainer.classList.remove('hidden');
                 
                 // Attach to remote video element
                 remoteVideo.srcObject = remoteStream;
+                console.log('Attached remote stream to video element');
                 
                 // Show video toggle control
                 if (videoToggleBtn) {
@@ -309,12 +359,61 @@ function createPeerConnection() {
                 }
             } else {
                 // Audio-only call
-                remoteAudio.srcObject = remoteStream;
+                console.log('Audio-only call, using audio element only');
+                // Show the audio element more prominently for audio-only calls
+                const audioElement = document.getElementById('remote-audio');
+                if (audioElement) {
+                    audioElement.style.display = 'block';
+                    audioElement.style.width = '100%';
+                    audioElement.controls = true;
+                    console.log('Enhanced audio element display for audio-only call');
+                }
             }
         }
     };
     
+    // For the callee, listen for the datachannel
+    peerConnection.ondatachannel = (event) => {
+        console.log('Received data channel from peer');
+        dataChannel = event.channel;
+        dataChannelConnecting = false; // No longer connecting as we received it
+        setupDataChannel(dataChannel);
+    };
+    
     return peerConnection;
+}
+
+// Function to create a data channel
+function createDataChannel() {
+    if (peerConnection && !dataChannel) {
+        try {
+            dataChannelConnecting = true;
+            dataChannelRetryCount++;
+            console.log(`Creating data channel (attempt ${dataChannelRetryCount})`);
+            
+            // Create the data channel with more specific configuration
+            dataChannel = peerConnection.createDataChannel('chat', {
+                ordered: true,          // Guarantee message order
+                maxRetransmits: 3       // Give up after 3 retransmission attempts
+            });
+            
+            console.log('Data channel created, state:', dataChannel.readyState);
+            setupDataChannel(dataChannel);
+            
+            // If data channel is created but not open after 5 seconds, try again
+            setTimeout(() => {
+                if (dataChannel && dataChannel.readyState !== 'open' && dataChannelConnecting) {
+                    console.log('Data channel failed to open after timeout');
+                    dataChannelConnecting = false;
+                    // The next retry will happen from the ICE connection state change handler
+                }
+            }, 5000);
+            
+        } catch (error) {
+            console.error('Error creating data channel:', error);
+            dataChannelConnecting = false;
+        }
+    }
 }
 
 // Initiate a call to a peer
@@ -361,6 +460,9 @@ async function initiateCall(callType = 'audio') {
         localStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, localStream);
         });
+        
+        // Explicitly create the data channel as the caller
+        createDataChannel();
         
         // Create an offer
         const offer = await peerConnection.createOffer();
@@ -601,10 +703,23 @@ function displayUserList(users) {
         
         const userIdSpan = document.createElement('span');
         userIdSpan.textContent = userId;
+        if (unreadMessages[userId]) {
+            const unreadIndicator = document.createElement('span');
+            unreadIndicator.className = 'unread-indicator';
+            userIdSpan.appendChild(unreadIndicator);
+        }
         
         // Create button container for audio/video call buttons
         const btnContainer = document.createElement('div');
         btnContainer.className = 'call-buttons';
+        
+        // Create chat button
+        const chatBtn = document.createElement('button');
+        chatBtn.innerHTML = '<i class="fas fa-comment"></i> Chat';
+        chatBtn.className = 'btn chat-btn';
+        chatBtn.addEventListener('click', () => {
+            openDirectChat(userId);
+        });
         
         // Create audio call button
         const audioCallBtn = document.createElement('button');
@@ -625,6 +740,7 @@ function displayUserList(users) {
         });
         
         // Add buttons to container
+        btnContainer.appendChild(chatBtn);
         btnContainer.appendChild(audioCallBtn);
         btnContainer.appendChild(videoCallBtn);
         
@@ -640,13 +756,29 @@ function displayUserList(users) {
 
 // Show the active call UI
 function showActiveCall(peerId) {
-// Hide other UI components
-callControls.classList.add('hidden');
-incomingCallContainer.classList.add('hidden');
+    // Hide other UI components
+    callControls.classList.add('hidden');
+    incomingCallContainer.classList.add('hidden');
     
-// Update and show active call UI
-activePeerId.textContent = peerId;
-activeCallContainer.classList.remove('hidden');
+    // Update and show active call UI
+    activePeerId.textContent = peerId;
+    activeCallContainer.classList.remove('hidden');
+    
+    // Initially keep chat disabled until data channel is open
+    const chatInput = document.getElementById('chat-input');
+    const sendButton = document.getElementById('send-message-btn');
+    
+    if (chatInput) {
+        chatInput.disabled = true;
+    }
+    if (sendButton) {
+        sendButton.disabled = true;
+    }
+
+    // Clear previous messages
+    document.getElementById('chat-messages').innerHTML = '';
+
+    console.log('Chat interface prepared for active call (waiting for data channel)');
 }
 
 // Reset call state and UI
@@ -658,7 +790,11 @@ function resetCall() {
     }
     
     // Clear audio and video elements
-    remoteAudio.srcObject = null;
+    const audioElement = document.getElementById('remote-audio');
+    if (audioElement) {
+        audioElement.srcObject = null;
+        console.log('Cleared remote audio stream');
+    }
     
     if (localVideo) {
         localVideo.srcObject = null;
@@ -681,6 +817,14 @@ function resetCall() {
     
     // Reset UI
     resetUI();
+    
+    // Clear chat interface
+    document.getElementById('chat-messages').innerHTML = '';
+    document.getElementById('chat-input').value = '';
+    document.getElementById('chat-input').disabled = true;
+    document.getElementById('send-message-btn').disabled = true;
+    isDataChannelOpen = false;
+    dataChannel = null;
 }
 
 // Reset UI to initial state
@@ -716,20 +860,377 @@ socket.send(JSON.stringify(message));
 // Initialize the application on page load
 window.addEventListener('load', init);
 
+// Direct Chat functions
+
+// Open direct chat with a user
+function openDirectChat(peerId) {
+    // Set the current direct chat peer
+    directChatPeerId = peerId;
+    
+    // Update UI
+    const directChatContainer = document.getElementById('direct-chat');
+    const directChatPeerIdElement = document.getElementById('direct-chat-peer-id');
+    
+    directChatPeerIdElement.textContent = peerId;
+    directChatContainer.classList.remove('hidden');
+    
+    // Clear unread indicator for this user
+    if (unreadMessages[peerId]) {
+        unreadMessages[peerId] = false;
+        displayUserList(Array.from(document.querySelectorAll('#user-list .user-item span'))
+            .map(span => span.textContent.trim()));
+    }
+    
+    // Load and display chat history
+    displayDirectChatHistory(peerId);
+    
+    // Focus the input field
+    document.getElementById('direct-chat-input').focus();
+}
+
+// Close the direct chat window
+function closeDirectChat() {
+    document.getElementById('direct-chat').classList.add('hidden');
+    directChatPeerId = null;
+}
+
+// Display chat history for a specific peer
+function displayDirectChatHistory(peerId) {
+    const messagesContainer = document.getElementById('direct-chat-messages');
+    messagesContainer.innerHTML = '';
+    
+    if (chatHistory[peerId]) {
+        chatHistory[peerId].forEach(message => {
+            displayDirectMessage(
+                message.text,
+                message.isSent,
+                message.timestamp
+            );
+        });
+    }
+    
+    // Scroll to bottom
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+// Send a direct chat message
+function sendDirectChatMessage() {
+    const chatInput = document.getElementById('direct-chat-input');
+    const messageText = chatInput.value.trim();
+    
+    if (!messageText || !directChatPeerId) return; // Don't send empty messages
+    
+    const message = {
+        text: messageText,
+        timestamp: Date.now()
+    };
+    
+    // Store in chat history
+    if (!chatHistory[directChatPeerId]) {
+        chatHistory[directChatPeerId] = [];
+    }
+    
+    chatHistory[directChatPeerId].push({
+        text: message.text,
+        timestamp: message.timestamp,
+        isSent: true
+    });
+    
+    // Display the message in the chat window
+    displayDirectMessage(message.text, true, message.timestamp);
+    
+    // Clear input field
+    chatInput.value = '';
+    
+    // Send message to server
+    sendToSignalingServer({
+        type: 'chat-message',
+        targetId: directChatPeerId,
+        text: message.text,
+        timestamp: message.timestamp
+    });
+}
+
+// Handle incoming direct chat message
+function handleDirectChatMessage(senderId, text, timestamp) {
+    console.log(`Received message from ${senderId}: ${text}`);
+    
+    // Store in chat history
+    if (!chatHistory[senderId]) {
+        chatHistory[senderId] = [];
+    }
+    
+    chatHistory[senderId].push({
+        text: text,
+        timestamp: timestamp,
+        isSent: false
+    });
+    
+    // If direct chat with this user is open, display the message
+    if (directChatPeerId === senderId) {
+        displayDirectMessage(text, false, timestamp);
+    } else {
+        // Mark as unread
+        unreadMessages[senderId] = true;
+        // Update user list to show unread indicator
+        const userList = Array.from(document.querySelectorAll('#user-list .user-item span'))
+            .map(span => span.textContent.trim());
+        displayUserList(userList);
+    }
+}
+
+// Display a message in the direct chat window
+function displayDirectMessage(text, isSent, timestamp = Date.now()) {
+    const messagesContainer = document.getElementById('direct-chat-messages');
+    const messageElement = document.createElement('div');
+    
+    // Set message class based on whether it was sent or received
+    messageElement.className = `message ${isSent ? 'message-sent' : 'message-received'}`;
+    
+    // Add sender label
+    const senderElement = document.createElement('div');
+    senderElement.className = 'message-sender';
+    senderElement.textContent = isSent ? 'You' : directChatPeerId;
+    messageElement.appendChild(senderElement);
+    
+    // Add message text
+    const textElement = document.createElement('div');
+    textElement.textContent = text;
+    messageElement.appendChild(textElement);
+    
+    // Add timestamp
+    const timeElement = document.createElement('div');
+    timeElement.className = 'message-time';
+    timeElement.textContent = new Date(timestamp).toLocaleTimeString();
+    messageElement.appendChild(timeElement);
+    
+    // Add to container
+    messagesContainer.appendChild(messageElement);
+    
+    // Scroll to bottom
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+// Set up direct chat interface event listeners
+function setupDirectChatInterface() {
+    const sendButton = document.getElementById('direct-send-message-btn');
+    const chatInput = document.getElementById('direct-chat-input');
+    const closeButton = document.getElementById('close-direct-chat-btn');
+    
+    sendButton.addEventListener('click', sendDirectChatMessage);
+    
+    chatInput.addEventListener('keypress', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            sendDirectChatMessage();
+        }
+    });
+    
+    closeButton.addEventListener('click', closeDirectChat);
+}
+
 // Clean up resources when page is unloaded
+// Set up data channel events and handlers
+function setupDataChannel(channel) {
+    if (!channel) {
+        console.error('Cannot setup data channel - channel is null');
+        return;
+    }
+    
+    console.log('Setting up data channel, current state:', channel.readyState);
+    
+    channel.onopen = () => {
+        console.log('Data channel is now open and ready for use');
+        isDataChannelOpen = true;
+        dataChannelConnecting = false;
+        dataChannelRetryCount = 0; // Reset retry count once successfully connected
+        
+        // Enable the chat input once the data channel is open
+        document.getElementById('chat-input').disabled = false;
+        document.getElementById('send-message-btn').disabled = false;
+        
+        // Display a system message
+        displaySystemMessage('Chat connection established. You can now send messages.');
+    };
+    
+    channel.onclose = () => {
+        console.log('Data channel has closed');
+        isDataChannelOpen = false;
+        
+        // Disable the chat input when the data channel closes
+        document.getElementById('chat-input').disabled = true;
+        document.getElementById('send-message-btn').disabled = true;
+        
+        // Display a system message
+        displaySystemMessage('Chat connection closed.');
+    };
+    
+    channel.onmessage = (event) => {
+        console.log('Received message via data channel:', event.data);
+        try {
+            const message = JSON.parse(event.data);
+            displayMessage(message.text, false, message.timestamp);
+        } catch (error) {
+            console.error('Error parsing message:', error);
+            // If parsing fails, just display the raw message
+            displayMessage(event.data, false);
+        }
+    };
+    
+    channel.onerror = (error) => {
+        console.error('Data channel error:', error);
+        showError('Chat error: ' + (error.message || 'Unknown error'));
+        isDataChannelOpen = false;
+        dataChannelConnecting = false;
+    };
+}
+
+// Send a chat message
+function sendChatMessage() {
+    const chatInput = document.getElementById('chat-input');
+    const messageText = chatInput.value.trim();
+    
+    if (!messageText) return; // Don't send empty messages
+    
+    const message = {
+        text: messageText,
+        timestamp: Date.now()
+    };
+    
+    // Always display the message locally
+    displayMessage(messageText, true, message.timestamp);
+    chatInput.value = '';
+    
+    // Try to send via data channel if available
+    if (dataChannel && dataChannel.readyState === 'open') {
+        try {
+            dataChannel.send(JSON.stringify(message));
+            console.log('Message sent via data channel');
+        } catch (error) {
+            console.error('Error sending message:', error);
+            displaySystemMessage(`Error sending message: ${error.message}. Trying to reconnect...`);
+            
+            // If there was an error sending, try to recreate the data channel
+            if (peerConnection && peerConnection.connectionState === 'connected' && 
+                dataChannelRetryCount < MAX_DATA_CHANNEL_RETRIES) {
+                createDataChannel();
+            }
+        }
+    } else {
+        // Check if we're in a call but data channel isn't ready
+        if (peerConnection && currentPeerId) {
+            console.warn('Data channel not ready, message displayed locally only');
+            displaySystemMessage('Message displayed locally only - chat connection being established...');
+            
+            // If we're connected but data channel isn't ready, try to create it
+            if (peerConnection.connectionState === 'connected' && 
+                dataChannelRetryCount < MAX_DATA_CHANNEL_RETRIES) {
+                createDataChannel();
+            }
+        } else {
+            // Not in a call
+            console.warn('Not in a call, message displayed locally only');
+            displaySystemMessage('Message displayed locally only - not in a call');
+        }
+    }
+}
+
+// Display a message in the chat window
+function displayMessage(text, isSent, timestamp = Date.now()) {
+    const messagesContainer = document.getElementById('chat-messages');
+    const messageElement = document.createElement('div');
+    
+    // Set message class based on whether it was sent or received
+    messageElement.className = `message ${isSent ? 'message-sent' : 'message-received'}`;
+    
+    // Add sender label
+    const senderElement = document.createElement('div');
+    senderElement.className = 'message-sender';
+    senderElement.textContent = isSent ? 'You' : currentPeerId;
+    messageElement.appendChild(senderElement);
+    
+    // Add message text
+    const textElement = document.createElement('div');
+    textElement.textContent = text;
+    messageElement.appendChild(textElement);
+    
+    // Add timestamp
+    const timeElement = document.createElement('div');
+    timeElement.className = 'message-time';
+    const messageDate = new Date(timestamp);
+    timeElement.textContent = messageDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    messageElement.appendChild(timeElement);
+    
+    // Add to container and scroll to bottom
+    messagesContainer.appendChild(messageElement);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+// Display a system message in the chat window
+function displaySystemMessage(text) {
+    const messagesContainer = document.getElementById('chat-messages');
+    const messageElement = document.createElement('div');
+    
+    // Style system messages differently
+    messageElement.className = 'message message-system';
+    messageElement.style.backgroundColor = '#f8f9fa';
+    messageElement.style.color = '#666';
+    messageElement.style.fontSize = '0.85rem';
+    messageElement.style.padding = '5px 10px';
+    messageElement.style.margin = '5px auto';
+    messageElement.style.borderRadius = '8px';
+    messageElement.style.width = 'fit-content';
+    messageElement.style.maxWidth = '90%';
+    messageElement.style.textAlign = 'center';
+    messageElement.style.fontStyle = 'italic';
+    
+    // Add message text
+    messageElement.textContent = text;
+    
+    // Add to container and scroll to bottom
+    messagesContainer.appendChild(messageElement);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+// Set up event listeners for the chat interface
+function setupChatInterface() {
+    const sendButton = document.getElementById('send-message-btn');
+    const chatInput = document.getElementById('chat-input');
+    
+    // Initially disable chat until data channel is open
+    chatInput.disabled = true;
+    sendButton.disabled = true;
+    
+    // Send button click handler
+    sendButton.addEventListener('click', sendChatMessage);
+    
+    // Enter key press handler
+    chatInput.addEventListener('keypress', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            sendChatMessage();
+        }
+    });
+}
+
+// Add chat interface setup to the init function
+function initChat() {
+    setupChatInterface();
+}
+
 window.addEventListener('beforeunload', () => {
-// Close any active call
-if (currentPeerId) {
-endCall();
-}
+    // Close any active call
+    if (currentPeerId) {
+        endCall();
+    }
     
-// Close WebSocket connection
-if (socket) {
-socket.close();
-}
+    // Close WebSocket connection
+    if (socket) {
+        socket.close();
+    }
     
-// Stop local media streams
-if (localStream) {
-localStream.getTracks().forEach(track => track.stop());
-}
+    // Stop local media streams
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+    }
 });

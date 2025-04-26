@@ -3,7 +3,15 @@ const http = require('http');
 
 // Create HTTP server
 const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  // Add CORS headers and Content-Security-Policy headers
+  res.writeHead(200, { 
+    'Content-Type': 'text/plain',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    // Allow unsafe-eval for script execution, needed for WebRTC functionality
+    'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' ws: wss: *; media-src 'self' blob:"
+  });
   res.end('WebSocket Server for WebRTC Signaling');
 });
 
@@ -54,6 +62,31 @@ wss.on('connection', (ws) => {
             ws.send(JSON.stringify({
               type: 'error',
               message: 'User not found or offline'
+            }));
+          }
+          break;
+          
+        case 'chat-message':
+          // Forward chat message to target user
+          if (data.targetId && clients.has(data.targetId)) {
+            clients.get(data.targetId).send(JSON.stringify({
+              type: 'chat-message',
+              senderId: ws.clientId,
+              text: data.text,
+              timestamp: data.timestamp
+            }));
+            
+            // Send confirmation back to sender
+            ws.send(JSON.stringify({
+              type: 'message-delivered',
+              targetId: data.targetId,
+              timestamp: data.timestamp
+            }));
+          } else {
+            // Target user not found, inform sender
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: 'Chat recipient not found or offline'
             }));
           }
           break;
